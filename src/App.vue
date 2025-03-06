@@ -21,7 +21,7 @@
   const messages = ref<Message[]>([]);
   const peer = ref<Peer>();
   const users = ref<User[]>([]);
-  const isHost = ref(false);
+
   const roomId = ref('');
   const isRecording = ref(false);
   const mediaRecorder = ref<MediaRecorder | null>(null);
@@ -32,38 +32,23 @@
   const isConnected = ref(false);
 
   onMounted(() => {
-    peer.value = new Peer({
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google .com:19302' },
-          { urls: 'stun:stun1.l.google.com:19302' },
-          {
-            urls: 'turn:numb.viagenie.ca',
-            credential: 'muazkh',
-            username: 'webrtc@live.com',
-          },
-        ],
-      },
-    });
+    peer.value = new Peer();
 
     peer.value.on('open', (id) => {
       myId.value = id;
-      isHost.value = true;
-      console.log('ID комнаты:', id);
+      console.log('My peer ID:', id);
     });
 
     peer.value.on('connection', (connection) => {
-      console.log('Новое подключение:', connection.peer);
+      console.log('New connection:', connection.peer);
       const newUser: User = {
         id: connection.peer,
         nickname: '',
-        conn: connection,
+        conn: connection
       };
       users.value.push(newUser);
       setupConnection(connection, newUser);
     });
-
-    setInterval(checkConnections, 5000);
 
     window
       .matchMedia('(prefers-color-scheme: dark)')
@@ -78,68 +63,42 @@
       return;
     }
 
-    try {
-      const connection = peer.value?.connect(roomId.value, {
-        reliable: true,
+    const connection = peer.value?.connect(roomId.value.trim());
+    
+    const newUser: User = {
+      id: roomId.value,
+      nickname: 'Хост',
+      conn: connection
+    };
+
+    connection?.on('open', () => {
+      users.value.push(newUser);
+      setupConnection(connection, newUser);
+      connection.send({
+        type: 'NICKNAME',
+        nickname: nickname.value
       });
-
-      if (connection) {
-        const newUser: User = {
-          id: roomId.value,
-          nickname: 'Хост',
-          conn: connection,
-        };
-
-        connection.on('open', () => {
-          users.value.push(newUser);
-          setupConnection(connection, newUser);
-          connection.send({
-            type: 'NICKNAME',
-            nickname: nickname.value,
-          });
-          console.log('Подключено к комнате:', roomId.value);
-          isConnected.value = true;
-        });
-      }
-    } catch (err) {
-      console.error('Ошибка при подключении к комнате:', err);
-      alert('Ошибка при подключении к комнате. Проверьте ID комнаты.');
-    }
+      isConnected.value = true;
+    });
   };
 
   const setupConnection = (connection: any, user: User) => {
     connection.on('data', (data: any) => {
-      console.log('Получены данные:', data);
-
       if (data.type === 'NICKNAME') {
         user.nickname = data.nickname;
-        console.log('Обновлен никнейм пользователя:', user.nickname);
       } else if (data.type === 'MESSAGE') {
         messages.value.push({
           sender: data.sender || user.nickname,
           type: 'text',
-          text: data.message,
+          text: data.message
         });
       } else if (data.type === 'VOICE_MESSAGE') {
         messages.value.push({
           sender: data.sender,
           type: 'voice',
-          audio: data.audio,
+          audio: data.audio
         });
       }
-    });
-
-    connection.on('open', () => {
-      console.log('Соединение открыто с пользователем:', user.id);
-    });
-
-    connection.on('close', () => {
-      console.log('Соединение закрыто с пользователем:', user.id);
-      users.value = users.value.filter((u) => u.id !== user.id);
-    });
-
-    connection.on('error', (err: any) => {
-      console.error('Ошибка соединения с пользователем:', user.id, err);
     });
   };
 
@@ -216,10 +175,6 @@
       isRecording.value = false;
       mediaRecorder.value.stream.getTracks().forEach((track) => track.stop());
     }
-  };
-
-  const checkConnections = () => {
-    users.value = users.value.filter((user) => user.conn && user.conn.open);
   };
 
   const copyId = async () => {
