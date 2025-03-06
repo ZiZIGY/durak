@@ -12,7 +12,6 @@
   interface Message {
     sender: string;
     type: 'text' | 'voice';
-    text?: string;
     audio?: string;
     isOwnMessage: boolean;
     color: string;
@@ -95,67 +94,134 @@
 
     const connection = peer.value?.connect(roomId.value.trim());
 
-    const newUser: User = {
-      id: roomId.value,
-      nickname: 'Хост',
-      conn: connection,
-      color: userColor.value,
-    };
+    if (connection) {
+      connection.on('open', () => {
+        const newUser = {
+          id: roomId.value,
+          nickname: 'Хост',
+          conn: connection,
+          color: userColor.value,
+        };
 
-    connection?.on('open', () => {
-      users.value.push(newUser);
-      setupConnection(connection, newUser);
-      connection?.send({
-        type: 'NICKNAME',
-        nickname: nickname.value,
-        color: userColor.value,
+        users.value.push(newUser);
+        setupConnection(connection, newUser);
+
+        // Отправляем свои данные хосту
+        connection.send({
+          type: 'NEW_USER',
+          userId: peer.value?.id,
+          nickname: nickname.value,
+          color: userColor.value,
+        });
       });
-      isConnected.value = true;
-    });
+    }
   };
 
   const setupConnection = (connection: any, user: User) => {
     connection.on('data', (data: any) => {
-      console.log('Получены данные:', data);
+      console.log('Получены данные:', data, 'от пользователя:', user.id);
 
-      if (data.type === 'NICKNAME') {
-        user.nickname = data.nickname;
-        user.color = data.color;
+      if (data.type === 'NEW_USER') {
+        // Обработка нового пользователя
+        console.log('Новый пользователь подключился:', data);
 
-        // Если мы хост, отправляем всем обновленный список пользователей
         if (peer.value?.id === myId.value) {
-          const usersList = users.value.map((u) => ({
-            id: u.id,
-            nickname: u.nickname,
-            color: u.color,
-          }));
+          // Если мы хост
+          // Отправляем новому пользователю текущий список участников
+          connection.send({
+            type: 'USERS_LIST',
+            users: users.value.map((u) => ({
+              id: u.id,
+              nickname: u.nickname,
+              color: u.color,
+            })),
+          });
 
-          users.value.forEach((otherUser) => {
-            if (otherUser.conn && otherUser.conn.open) {
-              otherUser.conn.send({
-                type: 'USERS_LIST',
-                users: usersList,
+          // Уведомляем всех остальных о новом пользователе
+          users.value.forEach((existingUser) => {
+            if (
+              existingUser.id !== user.id &&
+              existingUser.conn &&
+              existingUser.conn.open
+            ) {
+              existingUser.conn.send({
+                type: 'USER_JOINED',
+                user: {
+                  id: data.userId,
+                  nickname: data.nickname,
+                  color: data.color,
+                },
               });
             }
           });
         }
+
+        // Обновляем информацию о пользователе
+        user.nickname = data.nickname;
+        user.color = data.color;
+        user.id = data.userId;
+      } else if (data.type === 'USER_JOINED') {
+        // Добавляем информацию о новом пользователе в свой список
+        console.log('Получено уведомление о новом пользователе:', data.user);
+
+        if (!users.value.find((u) => u.id === data.user.id)) {
+          users.value.push({
+            ...data.user,
+            conn: null, // Соединение установим позже
+          });
+        }
       } else if (data.type === 'USERS_LIST') {
+        // Обновляем свой список пользователей
+        console.log('Получен список пользователей:', data.users);
+
         users.value = data.users.map((u: any) => ({
           ...u,
           conn: users.value.find((existingUser) => existingUser.id === u.id)
             ?.conn,
         }));
+
+        // Устанавливаем соединения с остальными пользователями
+        data.users.forEach((u: any) => {
+          if (
+            u.id !== peer.value?.id &&
+            u.id !== user.id &&
+            !users.value.find((existingUser) => existingUser.id === u.id)?.conn
+          ) {
+            const newConn = peer.value?.connect(u.id);
+            if (newConn) {
+              newConn.on('open', () => {
+                const newUser = {
+                  id: u.id,
+                  nickname: u.nickname,
+                  color: u.color,
+                  conn: newConn,
+                };
+                setupConnection(newConn, newUser);
+
+                // Отправляем свои данные
+                newConn.send({
+                  type: 'NEW_USER',
+                  userId: peer.value?.id,
+                  nickname: nickname.value,
+                  color: userColor.value,
+                });
+              });
+            }
+          }
+        });
       } else if (data.type === 'MESSAGE') {
+        console.log('Получено сообщение:', data);
+
         // Добавляем сообщение в свой список
         messages.value.push({
-          sender: data.sender || user.nickname,
+          sender: data.sender,
           type: 'text',
           text: data.message,
           isOwnMessage: false,
           color: data.color,
         });
 
-        // Если мы хост, ретранслируем сообщение остальным участникам
+        // Если мы хост, ретранслируем сообщение остальным
         if (peer.value?.id === myId.value) {
           users.value.forEach((otherUser) => {
             if (
@@ -163,12 +229,7 @@
               otherUser.conn &&
               otherUser.conn.open
             ) {
-              otherUser.conn.send({
-                type: 'MESSAGE',
-                message: data.message,
-                sender: data.sender,
-                color: data.color,
-              });
+              otherUser.conn.send(data);
             }
           });
         }
