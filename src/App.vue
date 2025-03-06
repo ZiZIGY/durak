@@ -122,18 +122,19 @@
         user.nickname = data.nickname;
         user.color = data.color;
 
+        // Если мы хост, отправляем всем обновленный список пользователей
         if (peer.value?.id === myId.value) {
-          const usersList = users.value.map((u) => ({
+          const usersList = users.value.map(u => ({
             id: u.id,
             nickname: u.nickname,
-            color: u.color,
+            color: u.color
           }));
-
-          users.value.forEach((otherUser) => {
+          
+          users.value.forEach(otherUser => {
             if (otherUser.conn && otherUser.conn.open) {
               otherUser.conn.send({
                 type: 'USERS_LIST',
-                users: usersList,
+                users: usersList
               });
             }
           });
@@ -141,31 +142,23 @@
       } else if (data.type === 'USERS_LIST') {
         users.value = data.users.map((u: any) => ({
           ...u,
-          conn: users.value.find((existingUser) => existingUser.id === u.id)
-            ?.conn,
+          conn: users.value.find(existingUser => existingUser.id === u.id)?.conn
         }));
       } else if (data.type === 'MESSAGE') {
+        // Добавляем сообщение в свой список
         messages.value.push({
           sender: data.sender || user.nickname,
           type: 'text',
           text: data.message,
           isOwnMessage: false,
-          color: data.color,
+          color: data.color
         });
 
+        // Если мы хост, ретранслируем сообщение остальным
         if (peer.value?.id === myId.value) {
-          users.value.forEach((otherUser) => {
-            if (
-              otherUser.id !== user.id &&
-              otherUser.conn &&
-              otherUser.conn.open
-            ) {
-              otherUser.conn.send({
-                type: 'MESSAGE',
-                message: data.message,
-                sender: data.sender,
-                color: data.color,
-              });
+          users.value.forEach(otherUser => {
+            if (otherUser.id !== user.id && otherUser.conn && otherUser.conn.open) {
+              otherUser.conn.send(data);
             }
           });
         }
@@ -209,13 +202,25 @@
       }
     });
 
-    // Добавляем обработку звонков
+    // Обновляем обработку звонков
     peer.value?.on('call', async (call) => {
-      if (isInCall.value && localStream.value) {
+      try {
+        if (!localStream.value) {
+          localStream.value = await navigator.mediaDevices.getUserMedia({ audio: true });
+        }
+        
         call.answer(localStream.value);
+        
         call.on('stream', (remoteStream: MediaStream) => {
+          console.log('Получен удаленный стрим:', call.peer);
           addRemoteStream(call.peer, remoteStream);
         });
+
+        call.on('error', (err) => {
+          console.error('Ошибка в звонке:', err);
+        });
+      } catch (err) {
+        console.error('Ошибка при ответе на звонок:', err);
       }
     });
   };
@@ -231,32 +236,36 @@
     if (e.type === 'keyup' && e instanceof KeyboardEvent) {
       if (e.shiftKey) return;
     }
-
+    
     if (!message.value.trim()) return;
-
-    messages.value.push({
+    
+    // Добавляем свое сообщение в список
+    const newMessage = {
       sender: nickname.value || 'Вы',
-      type: 'text',
+      type: 'text' as const,
       text: message.value,
       isOwnMessage: true,
-      color: userColor.value,
-    });
+      color: userColor.value
+    };
+    
+    messages.value.push(newMessage);
 
-    users.value.forEach((user) => {
+    // Отправляем сообщение всем пользователям
+    users.value.forEach(user => {
       if (user.conn && user.conn.open) {
         try {
           user.conn.send({
             type: 'MESSAGE',
             message: message.value,
             sender: nickname.value || 'Пользователь',
-            color: userColor.value,
+            color: userColor.value
           });
         } catch (err) {
           console.error('Ошибка при отправке сообщения:', err);
         }
       }
     });
-
+    
     message.value = '';
     if (messageInput.value) {
       messageInput.value.style.height = 'auto';
@@ -420,27 +429,45 @@
     });
   };
 
-  const setupAudioStream = () => {
+  const setupAudioStream = async () => {
     if (!localStream.value) return;
 
-    users.value.forEach((user) => {
+    users.value.forEach(user => {
       if (!user.conn) return;
 
-      const call = peer.value?.call(user.id, localStream.value!);
-      if (call) {
-        call.on('stream', (remoteStream: MediaStream) => {
-          addRemoteStream(user.id, remoteStream);
-        });
+      try {
+        console.log('Вызываем пользователя:', user.id);
+        const call = peer.value?.call(user.id, localStream.value!);
+        
+        if (call) {
+          call.on('stream', (remoteStream: MediaStream) => {
+            console.log('Получен ответный стрим от:', user.id);
+            addRemoteStream(user.id, remoteStream);
+          });
+
+          call.on('error', (err) => {
+            console.error('Ошибка при звонке пользователю:', user.id, err);
+          });
+        }
+      } catch (err) {
+        console.error('Ошибка при установке аудио стрима:', err);
       }
     });
   };
 
   const addRemoteStream = (userId: string, stream: MediaStream) => {
+    console.log('Добавляем удаленный стрим для:', userId);
     remoteStreams.value.set(userId, stream);
-
+    
     const audio = new Audio();
     audio.srcObject = stream;
-    audio.play().catch(console.error);
+    audio.autoplay = true; // Добавляем автовоспроизведение
+    
+    audio.onloadedmetadata = () => {
+      console.log('Аудио элемент готов к воспроизведению');
+      audio.play().catch(err => console.error('Ошибка воспроизведения:', err));
+    };
+
     audioElements.value.set(userId, audio);
   };
 </script>
