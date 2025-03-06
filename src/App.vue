@@ -13,6 +13,8 @@
     type: 'text' | 'voice';
     text?: string;
     audio?: string;
+    isOwnMessage: boolean;
+    color: string;
   }
 
   const myId = ref('');
@@ -32,6 +34,8 @@
   const isConnected = ref(false);
 
   const messageInput = ref<HTMLTextAreaElement | null>(null);
+
+  const userColor = ref('#42b883');
 
   onMounted(() => {
     peer.value = new Peer();
@@ -93,12 +97,16 @@
           sender: data.sender || user.nickname,
           type: 'text',
           text: data.message,
+          isOwnMessage: false,
+          color: data.color,
         });
       } else if (data.type === 'VOICE_MESSAGE') {
         messages.value.push({
           sender: data.sender,
           type: 'voice',
           audio: data.audio,
+          isOwnMessage: false,
+          color: data.color,
         });
       }
     });
@@ -122,6 +130,8 @@
       sender: nickname.value || 'Вы',
       type: 'text',
       text: message.value,
+      isOwnMessage: true,
+      color: userColor.value,
     });
 
     users.value.forEach((user) => {
@@ -131,6 +141,7 @@
             type: 'MESSAGE',
             message: message.value,
             sender: nickname.value || 'Пользователь',
+            color: userColor.value,
           });
         } catch (err) {
           console.error('Ошибка при отправке сообщения:', err);
@@ -176,6 +187,8 @@
             sender: nickname.value,
             type: 'voice',
             audio: base64Audio,
+            isOwnMessage: true,
+            color: userColor.value,
           });
         };
       };
@@ -235,6 +248,12 @@
           placeholder="Введите ваш никнейм 👤"
         />
         <input
+          type="color"
+          v-model="userColor"
+          title="Выберите ваш цвет"
+          class="color-picker"
+        />
+        <input
           v-if="!isConnected"
           v-model="roomId"
           placeholder="ID комнаты для подключения 🔑"
@@ -259,7 +278,12 @@
         v-for="(msg, index) in messages"
         :key="index"
         class="message"
-        :class="{ 'voice-message': msg.type === 'voice' }"
+        :class="{
+          'voice-message': msg.type === 'voice',
+          'own-message': msg.isOwnMessage,
+          'other-message': !msg.isOwnMessage,
+        }"
+        :style="{ backgroundColor: msg.color + '80' }"
       >
         <strong>{{ msg.sender }}:</strong>
         <template v-if="msg.type === 'text'">
@@ -312,7 +336,7 @@
 
 <style scoped>
   .chat-container {
-    max-width: 800px;
+    max-width: 1200px;
     margin: 0 auto;
     padding: 20px;
     color: var(--text-color);
@@ -541,5 +565,68 @@
   .voice-message audio {
     border-radius: 20px;
     background-color: var(--button-bg-color);
+  }
+
+  .color-picker {
+    width: 40px;
+    height: 40px;
+    aspect-ratio: 1/1;
+    min-width: 40px !important;
+    padding: 0;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+
+  .color-picker::-webkit-color-swatch-wrapper {
+    padding: 0;
+  }
+
+  .color-picker::-webkit-color-swatch {
+    border: none;
+    border-radius: 4px;
+  }
+
+  .messages {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .message {
+    max-width: 80%;
+    padding: 10px;
+    border-radius: 12px;
+    word-break: break-word;
+  }
+
+  .own-message {
+    align-self: flex-start;
+    border-bottom-left-radius: 4px;
+  }
+
+  .other-message {
+    align-self: flex-end;
+    border-bottom-right-radius: 4px;
+  }
+
+  .voice-message {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .voice-message audio {
+    width: 200px;
+  }
+
+  @media (max-width: 600px) {
+    .message {
+      max-width: 90%;
+    }
+
+    .voice-message audio {
+      width: 150px;
+    }
   }
 </style>
