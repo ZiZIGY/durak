@@ -31,6 +31,8 @@
   );
   const isConnected = ref(false);
 
+  const messageInput = ref<HTMLTextAreaElement | null>(null);
+
   onMounted(() => {
     peer.value = new Peer();
 
@@ -44,7 +46,7 @@
       const newUser: User = {
         id: connection.peer,
         nickname: '',
-        conn: connection
+        conn: connection,
       };
       users.value.push(newUser);
       setupConnection(connection, newUser);
@@ -64,11 +66,11 @@
     }
 
     const connection = peer.value?.connect(roomId.value.trim());
-    
+
     const newUser: User = {
       id: roomId.value,
       nickname: 'Хост',
-      conn: connection
+      conn: connection,
     };
 
     connection?.on('open', () => {
@@ -76,7 +78,7 @@
       setupConnection(connection, newUser);
       connection.send({
         type: 'NICKNAME',
-        nickname: nickname.value
+        nickname: nickname.value,
       });
       isConnected.value = true;
     });
@@ -90,20 +92,31 @@
         messages.value.push({
           sender: data.sender || user.nickname,
           type: 'text',
-          text: data.message
+          text: data.message,
         });
       } else if (data.type === 'VOICE_MESSAGE') {
         messages.value.push({
           sender: data.sender,
           type: 'voice',
-          audio: data.audio
+          audio: data.audio,
         });
       }
     });
   };
 
-  const sendMessage = () => {
-    if (!message.value) return;
+  const autoGrow = () => {
+    if (messageInput.value) {
+      messageInput.value.style.height = 'auto';
+      messageInput.value.style.height = messageInput.value.scrollHeight + 'px';
+    }
+  };
+
+  const sendMessage = (e: Event) => {
+    if (e.type === 'keyup' && e instanceof KeyboardEvent) {
+      if (e.shiftKey) return;
+    }
+
+    if (!message.value.trim()) return;
 
     messages.value.push({
       sender: nickname.value || 'Вы',
@@ -126,6 +139,10 @@
     });
 
     message.value = '';
+
+    if (messageInput.value) {
+      messageInput.value.style.height = 'auto';
+    }
   };
 
   const startRecording = async () => {
@@ -203,7 +220,7 @@
   >
     <div class="connection-info">
       <div class="id-container">
-        <p>ID комнаты: {{ myId }}</p>
+        <p>ID комнаты: {{ myId }} 🔑</p>
         <button
           class="copy-button"
           @click="copyId"
@@ -215,23 +232,25 @@
       <div class="connect-form">
         <input
           v-model="nickname"
-          placeholder="Введите ваш никнейм"
+          placeholder="Введите ваш никнейм 👤"
         />
         <input
           v-if="!isConnected"
           v-model="roomId"
-          placeholder="ID комнаты для подключения"
+          placeholder="ID комнаты для подключения 🔑"
         />
         <button
           v-if="!isConnected"
           @click="joinRoom"
-          >Присоединиться к комнате</button
         >
+          Присоединиться к комнате 🚪
+        </button>
         <button
           v-else
           class="host-button"
-          >Вы подключены к комнате</button
         >
+          Вы подключены к комнате ✅
+        </button>
       </div>
     </div>
 
@@ -256,19 +275,29 @@
     </div>
 
     <div class="message-input">
-      <input
+      <textarea
+        ref="messageInput"
         v-model="message"
-        @keyup.enter="sendMessage"
-        placeholder="Введите сообщение"
-      />
-      <button @click="sendMessage">Отправить</button>
+        @input="autoGrow"
+        @keyup.enter.exact="sendMessage"
+        placeholder="Введите сообщение ✍️"
+        rows="1"
+      ></textarea>
+      <button
+        class="send-button"
+        @click="sendMessage"
+        title="Отправить"
+      >
+        📨
+      </button>
       <button
         class="voice-button"
         @mousedown="startRecording"
         @mouseup="stopRecording"
         :class="{ recording: isRecording }"
+        title="Голосовое сообщение"
       >
-        {{ isRecording ? 'Запись...' : 'Голосовое сообщение' }}
+        {{ isRecording ? '🔴' : '🎤' }}
       </button>
     </div>
 
@@ -358,49 +387,45 @@
   .message-input {
     display: flex;
     gap: 10px;
+    align-items: flex-start;
   }
 
-  input {
+  textarea {
     padding: 8px;
     flex: 1;
+    min-height: 40px;
+    max-height: 150px;
+    resize: none;
+    border-radius: 20px;
     color: var(--text-color);
     background-color: var(--input-bg-color);
     border: 1px solid var(--border-color);
-    border-radius: 4px;
+    font-family: inherit;
+    font-size: inherit;
+    line-height: 1.4;
   }
 
-  button {
-    padding: 8px 16px;
-    background-color: var(--primary-color);
-    color: white;
-    border: none;
-    border-radius: 4px;
-    cursor: pointer;
-  }
-
-  button:hover {
-    background-color: var(--primary-hover-color);
+  .send-button,
+  .voice-button {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 50%;
+    font-size: 1.2em;
+    transition: all 0.2s ease;
+    background-color: var(--button-bg-color);
   }
 
   .voice-button {
-    background-color: var(--accent-color);
+    background-color: var(--voice-button-bg);
   }
 
   .voice-button.recording {
-    background-color: var(--accent-active-color);
+    background-color: var(--recording-bg);
     animation: pulse 1s infinite;
-  }
-
-  @keyframes pulse {
-    0% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.5;
-    }
-    100% {
-      opacity: 1;
-    }
   }
 
   .host-button {
@@ -430,7 +455,13 @@
     }
 
     .message-input {
-      flex-direction: column;
+      gap: 8px;
+    }
+
+    .send-button,
+    .voice-button {
+      width: 36px;
+      height: 36px;
     }
   }
 
@@ -454,6 +485,9 @@
     --primary-hover-color: #3aa876;
     --accent-color: #ff4081;
     --accent-active-color: #ff1744;
+    --button-bg-color: #e0e0e0;
+    --voice-button-bg: #e0e0e0;
+    --recording-bg: #ff4444;
   }
 
   /* Темная тема */
@@ -467,6 +501,9 @@
     --primary-hover-color: #3aa876;
     --accent-color: #ff4081;
     --accent-active-color: #ff1744;
+    --button-bg-color: #424242;
+    --voice-button-bg: #424242;
+    --recording-bg: #ff4444;
   }
 
   @media (prefers-color-scheme: dark) {
@@ -477,5 +514,32 @@
       --border-color: #333333;
       --input-bg-color: #2d2d2d;
     }
+  }
+
+  @keyframes pulse {
+    0% {
+      transform: scale(1);
+    }
+    50% {
+      transform: scale(1.1);
+    }
+    100% {
+      transform: scale(1);
+    }
+  }
+
+  .send-button:hover,
+  .voice-button:hover {
+    transform: scale(1.1);
+  }
+
+  .send-button:active,
+  .voice-button:active {
+    transform: scale(0.95);
+  }
+
+  .voice-message audio {
+    border-radius: 20px;
+    background-color: var(--button-bg-color);
   }
 </style>
