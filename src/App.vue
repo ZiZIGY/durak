@@ -1,11 +1,12 @@
 <script setup lang="ts">
-  import { ref, onMounted } from 'vue';
+  import { ref, onMounted, watch, nextTick } from 'vue';
   import Peer from 'peerjs';
 
   interface User {
     id: string;
     nickname: string;
     conn?: any;
+    color?: string;
   }
 
   interface Message {
@@ -36,6 +37,29 @@
   const messageInput = ref<HTMLTextAreaElement | null>(null);
 
   const userColor = ref('#42b883');
+
+  // Добавляем новые состояния для звонка
+  const isInCall = ref(false);
+  const incomingCall = ref(false);
+  const localStream = ref<MediaStream | null>(null);
+  const remoteStreams = ref<Map<string, MediaStream>>(new Map());
+  const audioElements = ref<Map<string, HTMLAudioElement>>(new Map());
+
+  // Добавляем ref для контейнера сообщений
+  const messagesContainer = ref<HTMLDivElement | null>(null);
+
+  // Добавляем watch для автоскролла при новых сообщениях
+  watch(
+    () => messages.value.length,
+    () => {
+      nextTick(() => {
+        if (messagesContainer.value) {
+          messagesContainer.value.scrollTop =
+            messagesContainer.value.scrollHeight;
+        }
+      });
+    }
+  );
 
   onMounted(() => {
     peer.value = new Peer();
@@ -75,14 +99,16 @@
       id: roomId.value,
       nickname: 'Хост',
       conn: connection,
+      color: userColor.value,
     };
 
     connection?.on('open', () => {
       users.value.push(newUser);
       setupConnection(connection, newUser);
-      connection.send({
+      connection?.send({
         type: 'NICKNAME',
         nickname: nickname.value,
+        color: userColor.value,
       });
       isConnected.value = true;
     });
@@ -90,8 +116,34 @@
 
   const setupConnection = (connection: any, user: User) => {
     connection.on('data', (data: any) => {
+      console.log('Получены данные:', data);
+
       if (data.type === 'NICKNAME') {
         user.nickname = data.nickname;
+        user.color = data.color;
+
+        if (peer.value?.id === myId.value) {
+          const usersList = users.value.map((u) => ({
+            id: u.id,
+            nickname: u.nickname,
+            color: u.color,
+          }));
+
+          users.value.forEach((otherUser) => {
+            if (otherUser.conn && otherUser.conn.open) {
+              otherUser.conn.send({
+                type: 'USERS_LIST',
+                users: usersList,
+              });
+            }
+          });
+        }
+      } else if (data.type === 'USERS_LIST') {
+        users.value = data.users.map((u: any) => ({
+          ...u,
+          conn: users.value.find((existingUser) => existingUser.id === u.id)
+            ?.conn,
+        }));
       } else if (data.type === 'MESSAGE') {
         messages.value.push({
           sender: data.sender || user.nickname,
@@ -100,6 +152,23 @@
           isOwnMessage: false,
           color: data.color,
         });
+
+        if (peer.value?.id === myId.value) {
+          users.value.forEach((otherUser) => {
+            if (
+              otherUser.id !== user.id &&
+              otherUser.conn &&
+              otherUser.conn.open
+            ) {
+              otherUser.conn.send({
+                type: 'MESSAGE',
+                message: data.message,
+                sender: data.sender,
+                color: data.color,
+              });
+            }
+          });
+        }
       } else if (data.type === 'VOICE_MESSAGE') {
         messages.value.push({
           sender: data.sender,
@@ -107,6 +176,45 @@
           audio: data.audio,
           isOwnMessage: false,
           color: data.color,
+        });
+
+        if (peer.value?.id === myId.value) {
+          users.value.forEach((otherUser) => {
+            if (
+              otherUser.id !== user.id &&
+              otherUser.conn &&
+              otherUser.conn.open
+            ) {
+              otherUser.conn.send({
+                type: 'VOICE_MESSAGE',
+                audio: data.audio,
+                sender: data.sender,
+                color: data.color,
+              });
+            }
+          });
+        }
+      } else if (data.type === 'CALL_INVITE') {
+        if (!isInCall.value) {
+          incomingCall.value = true;
+        }
+      } else if (data.type === 'CALL_ACCEPTED') {
+        console.log(`${data.accepter} присоединился к звонку`);
+      } else if (data.type === 'CALL_DECLINED') {
+        console.log(`${data.decliner} отклонил звонок`);
+      } else if (data.type === 'CALL_ENDED') {
+        if (isInCall.value) {
+          endCall();
+        }
+      }
+    });
+
+    // Добавляем обработку звонков
+    peer.value?.on('call', async (call) => {
+      if (isInCall.value && localStream.value) {
+        call.answer(localStream.value);
+        call.on('stream', (remoteStream: MediaStream) => {
+          addRemoteStream(call.peer, remoteStream);
         });
       }
     });
@@ -150,7 +258,6 @@
     });
 
     message.value = '';
-
     if (messageInput.value) {
       messageInput.value.style.height = 'auto';
     }
@@ -173,15 +280,6 @@
         reader.readAsDataURL(audioBlob);
         reader.onloadend = () => {
           const base64Audio = reader.result as string;
-          users.value.forEach((user) => {
-            if (user.conn) {
-              user.conn.send({
-                type: 'VOICE_MESSAGE',
-                audio: base64Audio,
-                sender: nickname.value,
-              });
-            }
-          });
 
           messages.value.push({
             sender: nickname.value,
@@ -189,6 +287,17 @@
             audio: base64Audio,
             isOwnMessage: true,
             color: userColor.value,
+          });
+
+          users.value.forEach((user) => {
+            if (user.conn) {
+              user.conn.send({
+                type: 'VOICE_MESSAGE',
+                audio: base64Audio,
+                sender: nickname.value,
+                color: userColor.value,
+              });
+            }
           });
         };
       };
@@ -223,6 +332,116 @@
       }
       document.body.removeChild(textArea);
     }
+  };
+
+  // Добавляем функции для звонка
+  const startCall = async () => {
+    try {
+      localStream.value = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
+      isInCall.value = true;
+
+      // Отправляем всем приглашение в звонок
+      users.value.forEach((user) => {
+        if (user.conn && user.conn.open) {
+          user.conn.send({
+            type: 'CALL_INVITE',
+            caller: nickname.value,
+          });
+        }
+      });
+
+      // Инициализируем аудио соединения
+      setupAudioStream();
+    } catch (err) {
+      console.error('Ошибка при начале звонка:', err);
+      alert('Не удалось получить доступ к микрофону');
+    }
+  };
+
+  const acceptCall = async () => {
+    try {
+      localStream.value = await navigator.mediaDevices.getUserMedia({
+        audio: true,
+      });
+      incomingCall.value = false;
+      isInCall.value = true;
+
+      // Отправляем подтверждение
+      users.value.forEach((user) => {
+        if (user.conn && user.conn.open) {
+          user.conn.send({
+            type: 'CALL_ACCEPTED',
+            accepter: nickname.value,
+          });
+        }
+      });
+
+      setupAudioStream();
+    } catch (err) {
+      console.error('Ошибка при присоединении к звонку:', err);
+      alert('Не удалось получить доступ к микрофону');
+    }
+  };
+
+  const declineCall = () => {
+    incomingCall.value = false;
+    users.value.forEach((user) => {
+      if (user.conn && user.conn.open) {
+        user.conn.send({
+          type: 'CALL_DECLINED',
+          decliner: nickname.value,
+        });
+      }
+    });
+  };
+
+  const endCall = () => {
+    isInCall.value = false;
+    if (localStream.value) {
+      localStream.value.getTracks().forEach((track) => track.stop());
+      localStream.value = null;
+    }
+
+    // Очищаем удаленные потоки
+    remoteStreams.value.clear();
+    audioElements.value.forEach((audio) => audio.remove());
+    audioElements.value.clear();
+
+    // Уведомляем остальных
+    users.value.forEach((user) => {
+      if (user.conn && user.conn.open) {
+        user.conn.send({
+          type: 'CALL_ENDED',
+          ender: nickname.value,
+        });
+      }
+    });
+  };
+
+  const setupAudioStream = () => {
+    if (!localStream.value) return;
+
+    users.value.forEach((user) => {
+      if (!user.conn) return;
+
+      const call = peer.value?.call(user.id, localStream.value!);
+      if (call) {
+        call.on('stream', (remoteStream: MediaStream) => {
+          addRemoteStream(user.id, remoteStream);
+        });
+      }
+    });
+  };
+
+  const addRemoteStream = (userId: string, stream: MediaStream) => {
+    remoteStreams.value.set(userId, stream);
+
+    const audio = new Audio();
+    audio.srcObject = stream;
+    audio.play().catch(console.error);
+    audioElements.value.set(userId, audio);
   };
 </script>
 
@@ -273,7 +492,10 @@
       </div>
     </div>
 
-    <div class="messages">
+    <div
+      ref="messagesContainer"
+      class="messages"
+    >
       <div
         v-for="(msg, index) in messages"
         :key="index"
@@ -328,8 +550,72 @@
     <div class="connection-status">
       <p
         >Участники чата:
-        {{ users.map((u) => u.nickname || 'Гость').join(', ') }}</p
+        <span
+          v-for="(user, index) in users"
+          :key="user.id"
+        >
+          <span :style="{ color: user.color }">{{
+            user.nickname || 'Гость'
+          }}</span>
+          <span v-if="index < users.length - 1">, </span>
+        </span>
+      </p>
+    </div>
+
+    <!-- Добавляем кнопки управления звонком -->
+    <div class="call-controls">
+      <button
+        v-if="!isInCall && !incomingCall"
+        @click="startCall"
+        class="call-button"
+        title="Начать групповой звонок"
       >
+        <svg
+          viewBox="0 0 24 24"
+          class="call-icon"
+        >
+          <path
+            d="M20.01 15.38c-1.23 0-2.42-.2-3.53-.56-.35-.12-.74-.03-1.01.24l-1.57 1.97c-2.83-1.35-5.48-3.9-6.89-6.83l1.95-1.66c.27-.28.35-.67.24-1.02-.37-1.11-.56-2.3-.56-3.53 0-.54-.45-.99-.99-.99H4.19C3.65 3 3 3.24 3 3.99 3 13.28 10.73 21 20.01 21c.71 0 .99-.63.99-1.18v-3.45c0-.54-.45-.99-.99-.99z"
+          />
+        </svg>
+      </button>
+      <button
+        v-if="isInCall"
+        @click="endCall"
+        class="call-button end-call"
+        title="Завершить звонок"
+      >
+        <svg
+          viewBox="0 0 24 24"
+          class="call-icon"
+        >
+          <path
+            d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.73-1.68-1.36-2.66-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"
+          />
+        </svg>
+      </button>
+    </div>
+
+    <!-- Добавляем модальное окно входящего звонка -->
+    <div
+      v-if="incomingCall"
+      class="incoming-call-modal"
+    >
+      <div class="modal-content">
+        <p>Входящий групповой звонок</p>
+        <div class="call-actions">
+          <button
+            @click="acceptCall"
+            class="accept-call"
+            >✅ Принять</button
+          >
+          <button
+            @click="declineCall"
+            class="decline-call"
+            >❌ Отклонить</button
+          >
+        </div>
+      </div>
     </div>
   </div>
 </template>
@@ -391,11 +677,12 @@
 
   .messages {
     height: 400px;
-    border: 1px solid var(--border-color);
-    background-color: var(--surface-color);
-    padding: 10px;
-    margin-bottom: 20px;
     overflow-y: auto;
+    padding: 15px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scroll-behavior: smooth; /* Плавный скролл */
   }
 
   .message {
@@ -466,6 +753,10 @@
     padding: 10px;
     background-color: var(--surface-color);
     border-radius: 4px;
+  }
+
+  .connection-status span {
+    font-weight: 500;
   }
 
   @media (max-width: 600px) {
@@ -628,5 +919,120 @@
     .voice-message audio {
       width: 150px;
     }
+  }
+
+  .call-controls {
+    position: fixed;
+    bottom: 30px;
+    right: 30px;
+    z-index: 1000;
+  }
+
+  .call-button {
+    width: 56px;
+    height: 56px;
+    border-radius: 50%;
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: var(--call-button-bg);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+    transition: all 0.3s ease;
+  }
+
+  .call-button:hover {
+    transform: scale(1.1);
+    box-shadow: 0 6px 12px rgba(0, 0, 0, 0.3);
+  }
+
+  .call-button:active {
+    transform: scale(0.95);
+  }
+
+  .call-icon {
+    width: 24px;
+    height: 24px;
+    fill: white;
+  }
+
+  .end-call {
+    background-color: var(--end-call-bg);
+  }
+
+  .incoming-call-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+  }
+
+  .modal-content {
+    background-color: var(--surface-color);
+    padding: 20px;
+    border-radius: 8px;
+    text-align: center;
+  }
+
+  .call-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: center;
+    margin-top: 15px;
+  }
+
+  .accept-call {
+    background-color: var(--accept-call-bg);
+  }
+
+  .decline-call {
+    background-color: var(--decline-call-bg);
+  }
+
+  /* Добавляем переменные для цветов */
+  .chat-container {
+    --call-button-bg: #42b883;
+    --end-call-bg: #dc3545;
+    --accept-call-bg: #42b883;
+    --decline-call-bg: #ff4444;
+  }
+
+  .chat-container.dark {
+    --call-button-bg: #2c7a57;
+    --end-call-bg: #bb2d3b;
+    --accept-call-bg: #2c7a57;
+    --decline-call-bg: #cc0000;
+  }
+
+  /* Добавляем стили для скроллбара */
+  .messages::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .messages::-webkit-scrollbar-track {
+    background: var(--scroll-track-bg, rgba(0, 0, 0, 0.1));
+    border-radius: 4px;
+  }
+
+  .messages::-webkit-scrollbar-thumb {
+    background: var(--scroll-thumb-bg, rgba(0, 0, 0, 0.2));
+    border-radius: 4px;
+  }
+
+  .messages::-webkit-scrollbar-thumb:hover {
+    background: var(--scroll-thumb-hover-bg, rgba(0, 0, 0, 0.3));
+  }
+
+  .chat-container.dark {
+    --scroll-track-bg: rgba(255, 255, 255, 0.1);
+    --scroll-thumb-bg: rgba(255, 255, 255, 0.2);
+    --scroll-thumb-hover-bg: rgba(255, 255, 255, 0.3);
   }
 </style>
